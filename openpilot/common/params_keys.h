@@ -6,6 +6,9 @@
 #include "openpilot/cereal/gen/cpp/log.capnp.h"
 
 inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
+    {"FreePilotsVaultEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"FreePilotsVaultUrl", {PERSISTENT | BACKUP, STRING}},
+    {"FreePilotsVaultToken", {PERSISTENT | BACKUP, STRING}},
     {"AccessToken", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
     {"AdbEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"AlwaysOnDM", {PERSISTENT | BACKUP, BOOL}},
