@@ -18,6 +18,9 @@ PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
 # Description constants
 DESCRIPTIONS = {
+  "FreePilotsVaultEnabled": tr_noop(
+    "Directly stream and archive dashcam recordings to your private FreePilots Vault server instead of Comma Cloud."
+  ),
   "OpenpilotEnabledToggle": tr_noop(
     "Use the sunnypilot system for adaptive cruise control and lane keep driver assistance. " +
     "Your attention is required at all times to use this feature."
@@ -67,6 +70,12 @@ class TogglesLayout(Widget):
       "AlwaysOnDM": (
         lambda: tr("Always-On Driver Monitoring"),
         DESCRIPTIONS["AlwaysOnDM"],
+        "monitoring.png",
+        False,
+      ),
+      "FreePilotsVaultEnabled": (
+        lambda: tr("FreePilots Private Vault"),
+        DESCRIPTIONS["FreePilotsVaultEnabled"],
         "monitoring.png",
         False,
       ),
