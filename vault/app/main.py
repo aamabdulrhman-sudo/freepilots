@@ -3,17 +3,17 @@ import io
 import qrcode
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends, Request, Response
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from .storage import get_storage_stats, list_drives, save_uploaded_file, STORAGE_DIR
+from .auth import is_setup_completed, create_admin_user, verify_credentials, get_session_secret
 
 app = FastAPI(
     title="FreePilots Private Vault",
     description="Self-hosted dashcam and drive archive server for Sunnypilot and Comma 4",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 app.add_middleware(
@@ -30,13 +30,98 @@ PUBLIC_URL = os.getenv("PUBLIC_URL", "http://localhost:8107")
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+def is_authenticated(request: Request) -> bool:
+    session = request.cookies.get("freepilots_session")
+    if not session:
+        return False
+    return session == get_session_secret()
+
 def verify_token(x_vault_token: str = Header(None)):
+    """Device authentication for Comma uploader"""
     if VAULT_TOKEN and x_vault_token != VAULT_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid or missing X-Vault-Token header")
     return True
 
+# ----------------- Auth & Setup Routes -----------------
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request):
+    if is_setup_completed():
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("setup.html", {"request": request, "error": None})
+
+@app.post("/setup")
+async def do_setup(
+    request: Request,
+    response: Response,
+    username: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...)
+):
+    if is_setup_completed():
+        return RedirectResponse(url="/login", status_code=302)
+    
+    if len(password) < 6:
+        return templates.TemplateResponse("setup.html", {"request": request, "error": "كلمة المرور يجب أن تكون 6 خانات على الأقل / Password must be at least 6 characters"})
+        
+    if password != confirm_password:
+        return templates.TemplateResponse("setup.html", {"request": request, "error": "كلمات المرور غير متطابقة / Passwords do not match"})
+
+    user_data = create_admin_user(username, password)
+    redirect = RedirectResponse(url="/", status_code=302)
+    redirect.set_cookie(
+        key="freepilots_session",
+        value=user_data["session_secret"],
+        httponly=True,
+        samesite="lax",
+        max_age=60*60*24*30 # 30 days
+    )
+    return redirect
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if not is_setup_completed():
+        return RedirectResponse(url="/setup", status_code=302)
+    if is_authenticated(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+@app.post("/login")
+async def do_login(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...)
+):
+    if not is_setup_completed():
+        return RedirectResponse(url="/setup", status_code=302)
+        
+    if verify_credentials(username, password):
+        redirect = RedirectResponse(url="/", status_code=302)
+        redirect.set_cookie(
+            key="freepilots_session",
+            value=get_session_secret(),
+            httponly=True,
+            samesite="lax",
+            max_age=60*60*24*30
+        )
+        return redirect
+    return templates.TemplateResponse("login.html", {"request": request, "error": "اسم المستخدم أو كلمة المرور غير صحيحة / Invalid username or password"})
+
+@app.get("/logout")
+async def do_logout():
+    redirect = RedirectResponse(url="/login", status_code=302)
+    redirect.delete_cookie("freepilots_session")
+    return redirect
+
+# ----------------- Dashboard & Web Routes -----------------
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    if not is_setup_completed():
+        return RedirectResponse(url="/setup", status_code=302)
+    if not is_authenticated(request):
+        return RedirectResponse(url="/login", status_code=302)
+        
     stats = get_storage_stats()
     drives = list_drives()
     return templates.TemplateResponse("index.html", {
@@ -48,15 +133,22 @@ async def dashboard(request: Request):
     })
 
 @app.get("/api/stats")
-async def api_stats():
+async def api_stats(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     return get_storage_stats()
 
 @app.get("/api/drives")
-async def api_drives():
+async def api_drives(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     return list_drives()
 
 @app.get("/api/qrcode")
-async def generate_qr():
+async def generate_qr(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
     payload = f'{{"server":"{PUBLIC_URL}","token":"{VAULT_TOKEN}"}}'
     qr = qrcode.QRCode(version=1, box_size=10, border=3)
     qr.add_data(payload)
@@ -67,6 +159,8 @@ async def generate_qr():
     buf.seek(0)
     return StreamingResponse(buf, media_type="image/png")
 
+# ----------------- Device Upload Endpoints (Comma Device) -----------------
+
 @app.put("/api/upload_raw")
 async def upload_raw_stream(
     request: Request,
@@ -74,7 +168,7 @@ async def upload_raw_stream(
     dongle_id: Optional[str] = None,
     authorized: bool = Depends(verify_token)
 ):
-    """Native stream endpoint called directly by Sunnypilot's uploader.py"""
+    """Direct streaming upload endpoint called by Sunnypilot's uploader.py"""
     clean_key = key.split("|")[-1]
     parts = clean_key.split("/")
     filename = parts[-1]
@@ -112,6 +206,12 @@ async def upload_segment_file(
 
 @app.get("/api/video/{route_id}/{segment_num}/{filename}")
 async def stream_video(route_id: str, segment_num: str, filename: str, request: Request):
+    if not is_authenticated(request):
+        # allow if token is present
+        token = request.query_params.get("token")
+        if token != VAULT_TOKEN:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
     file_path = Path(STORAGE_DIR) / route_id / segment_num / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found")
