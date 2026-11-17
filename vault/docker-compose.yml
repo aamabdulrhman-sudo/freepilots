@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  freepilots-vault:
+    build: .
+    container_name: freepilots-vault
+    restart: always
+    ports:
+      - "${PORT:-8107}:8000"
+    environment:
+      - PUBLIC_URL=${PUBLIC_URL:-http://localhost:8107}
+      - VAULT_TOKEN=${VAULT_TOKEN:-freepilot_secret_token_2026}
+      - STORAGE_DIR=/data
+    volumes:
+      - freepilots_storage:/data
+
+volumes:
+  freepilots_storage:
+    name: freepilots_storage
